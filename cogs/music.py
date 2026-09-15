@@ -36,6 +36,9 @@ class GuildPlayer:
         self.pause_time: float = 0.0
         self.total_pause_duration: float = 0.0
 
+        # New seek flag
+        self.seek_target: float | None = None
+
 
 class MusicCog(commands.Cog):
     def __init__(self, bot: commands.Bot, spotify_resolver: SpotifyResolver | None):
@@ -63,13 +66,21 @@ class MusicCog(commands.Cog):
 
     def play_next(self, guild_id: int):
         player = self.players.get(guild_id)
-        if not player or not player.queue:
-            if player:
-                player.current = None
+        if not player:
             return
 
-        track = player.queue.popleft()
-        player.current = track
+        # Check if we are seeking inside the current track
+        if getattr(player, "seek_target", None) is not None:
+            track = player.current
+            start_offset = player.seek_target
+            player.seek_target = None  # Reset for next time
+        else:
+            if not player.queue:
+                player.current = None
+                return
+            track = player.queue.popleft()
+            player.current = track
+            start_offset = 0.0
 
         async def _start():
             try:
@@ -77,22 +88,31 @@ class MusicCog(commands.Cog):
             except Exception as e:
                 if player.text_channel:
                     await player.text_channel.send(f"⚠️ Couldn't stream **{track.display_name}**: {e}")
-                self.play_next(guild_id)
+                self.bot.loop.call_soon_threadsafe(lambda: self.play_next(guild_id))
                 return
-            source = discord.FFmpegPCMAudio(stream_url, **FFMPEG_OPTS)
+
+            # Apply FFmpeg -ss parameter for fast seeking
+            custom_ffmpeg_opts = dict(FFMPEG_OPTS)
+            if start_offset > 0:
+                existing = custom_ffmpeg_opts.get("before_options", "")
+                custom_ffmpeg_opts["before_options"] = f"-ss {start_offset} {existing}"
+
+            source = discord.FFmpegPCMAudio(stream_url, **custom_ffmpeg_opts)
 
             def _after(err):
                 if err:
                     print(f"Playback error: {err}")
                 self.bot.loop.call_soon_threadsafe(lambda: self.play_next(guild_id))
 
-            # Initialize timers for progress tracking right before playback
-            player.start_time = time.time()
+            # Set the start time minus the offset so /nowplaying accurately tracks progress
+            player.start_time = time.time() - start_offset
             player.pause_time = 0.0
             player.total_pause_duration = 0.0
 
             player.voice_client.play(source, after=_after)
-            if player.text_channel:
+            
+            # Announce only for new tracks, not seeks
+            if start_offset == 0 and player.text_channel:
                 await player.text_channel.send(
                     f"🎶 Now playing **{track.display_name}** — *{track.source}*"
                 )
@@ -232,6 +252,64 @@ class MusicCog(commands.Cog):
             await interaction.response.send_message("▶️ Resumed.")
         else:
             await interaction.response.send_message("Nothing is paused.")
+
+    @app_commands.command(name="seek", description="Jump to a specific time in the current track")
+    @app_commands.describe(timestamp="Time to jump to (e.g. 1:25 or 85)")
+    async def seek(self, interaction: discord.Interaction, timestamp: str):
+        player = self.get_player(interaction.guild_id)
+        if not player.current or not player.voice_client:
+            await interaction.response.send_message("Nothing is playing right now.")
+            return
+
+        try:
+            parts = timestamp.split(":")
+            if len(parts) == 3:
+                target = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            elif len(parts) == 2:
+                target = int(parts[0]) * 60 + int(parts[1])
+            else:
+                target = int(parts[0])
+        except ValueError:
+            await interaction.response.send_message("Invalid format. Use seconds (90) or MM:SS (1:30).")
+            return
+
+        # Ensure we don't seek past the end of the song
+        if player.current.duration > 0:
+            target = min(max(0, target), player.current.duration - 1)
+        else:
+            target = max(0, target)
+
+        player.seek_target = float(target)
+        player.voice_client.stop() # Automatically triggers play_next to handle the seek
+        await interaction.response.send_message(f"🔄 Jumped to {timestamp}.")
+
+    @app_commands.command(name="jump", description="Skip forward or backward by N seconds")
+    @app_commands.describe(seconds="Seconds to skip (use negative numbers to rewind)")
+    async def jump(self, interaction: discord.Interaction, seconds: int):
+        player = self.get_player(interaction.guild_id)
+        if not player.current or not player.voice_client:
+            await interaction.response.send_message("Nothing is playing right now.")
+            return
+
+        # Fetch current elapsed time
+        if player.pause_time > 0:
+            elapsed = player.pause_time - player.start_time - player.total_pause_duration
+        else:
+            elapsed = time.time() - player.start_time - player.total_pause_duration
+            
+        target = elapsed + seconds
+        
+        # Ensure we don't seek past the end of the song or into negative time
+        if player.current.duration > 0:
+            target = min(max(0, target), player.current.duration - 1)
+        else:
+            target = max(0, target)
+
+        player.seek_target = float(target)
+        player.voice_client.stop()
+        
+        direction = "⏩ Skipped forward" if seconds > 0 else "⏪ Rewound"
+        await interaction.response.send_message(f"{direction} by {abs(seconds)} seconds.")
 
     @app_commands.command(name="stopandclear", description="Stop playback and clear the queue")
     async def stop(self, interaction: discord.Interaction):
