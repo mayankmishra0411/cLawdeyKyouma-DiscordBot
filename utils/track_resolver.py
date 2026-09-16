@@ -60,6 +60,8 @@ YDL_SEARCH_OPTS = {
             "player_client": ["android", "ios"]
         }
     },
+    # Reads the uploaded cookie file
+    "cookiefile": "cookies.txt",
 }
 
 YDL_STREAM_OPTS = {
@@ -75,6 +77,8 @@ YDL_STREAM_OPTS = {
             "player_client": ["android", "ios"]
         }
     },
+    # Reads the uploaded cookie file
+    "cookiefile": "cookies.txt",
 }
 
 FFMPEG_OPTS = {
