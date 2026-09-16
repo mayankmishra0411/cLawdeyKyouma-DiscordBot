@@ -54,6 +54,12 @@ YDL_SEARCH_OPTS = {
     "default_search": "auto",
     "extract_flat": "in_playlist",
     "skip_download": True,
+    # Bypass YouTube cloud IP bot detection:
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "ios"]
+        }
+    },
 }
 
 YDL_STREAM_OPTS = {
@@ -63,6 +69,12 @@ YDL_STREAM_OPTS = {
     "no_warnings": True,
     "skip_download": True,
     "source_address": "0.0.0.0",
+    # Bypass YouTube cloud IP bot detection:
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "ios"]
+        }
+    },
 }
 
 FFMPEG_OPTS = {

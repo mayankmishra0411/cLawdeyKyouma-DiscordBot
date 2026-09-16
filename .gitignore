@@ -3,3 +3,5 @@
 __pycache__/
 .spotify_cache
 token.txt
+ssh-key-2026-09-16.key
+ssh-key-2026-09-16.key.pub
