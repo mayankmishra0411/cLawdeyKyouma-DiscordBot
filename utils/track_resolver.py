@@ -305,10 +305,19 @@ async def multi_search(query: str, yt_limit: int = 3, sc_limit: int = 5) -> list
 
 
 async def get_stream_url(stream_query: str) -> str:
-    """Resolve the final direct audio stream URL right before playback
-    (stream URLs expire, so we re-resolve at play time, not at search time)."""
-    info = await _run_extract(stream_query, YDL_STREAM_OPTS)
-    if "url" in info:
-        return info["url"]
-    # playlist-shaped single result
-    return info["entries"][0]["url"]
+    """Resolve the final direct audio stream URL right before playback."""
+    try:
+        info = await _run_extract(stream_query, YDL_STREAM_OPTS)
+        if "url" in info:
+            return info["url"]
+        return info["entries"][0]["url"]
+    except Exception as e:
+        print(f"YouTube stream extraction failed ({e}). Falling back to SoundCloud...")
+        # If stream_query is a URL or title, fall back to a SoundCloud search
+        sc_tracks = await search_soundcloud(stream_query, limit=1)
+        if sc_tracks:
+            info = await _run_extract(sc_tracks[0].stream_query, YDL_SEARCH_OPTS)
+            if "url" in info:
+                return info["url"]
+            return info["entries"][0]["url"]
+        raise e
