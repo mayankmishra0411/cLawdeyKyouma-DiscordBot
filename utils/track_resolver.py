@@ -46,6 +46,15 @@ class Track:
 # yt-dlp configuration
 # ---------------------------------------------------------------------------
 
+_YT_EXTRACTOR_ARGS = {
+    "youtube": {
+        "player_client": ["web"],
+        # This is the syntax confirmed working end-to-end on the Oracle box:
+        # fetch a PO token for the "web" client from the local bgutil server.
+        "po_token": ["web+http://127.0.0.1:4416"],
+    },
+}
+
 YDL_SEARCH_OPTS = {
     "format": "bestaudio/best",
     "noplaylist": True,
@@ -54,14 +63,7 @@ YDL_SEARCH_OPTS = {
     "default_search": "auto",
     "extract_flat": "in_playlist",
     "skip_download": True,
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["web"]
-        },
-        "youtubepot-bgutilhttp": {
-            "base_url": "http://127.0.0.1:4416"
-        }
-    }
+    "extractor_args": _YT_EXTRACTOR_ARGS,
 }
 
 YDL_STREAM_OPTS = {
@@ -71,14 +73,7 @@ YDL_STREAM_OPTS = {
     "no_warnings": True,
     "skip_download": True,
     "source_address": "0.0.0.0",
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["web"]
-        },
-        "youtubepot-bgutilhttp": {
-            "base_url": "http://127.0.0.1:4416"
-        }
-    }
+    "extractor_args": _YT_EXTRACTOR_ARGS,
 }
 
 FFMPEG_OPTS = {
