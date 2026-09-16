@@ -56,7 +56,7 @@ YDL_SEARCH_OPTS = {
     "skip_download": True,
     "extractor_args": {
         "youtube": {
-            "po_token": ["web+http://127.0.0.1:4416/"]
+            "player_client": ["web"]
         }
     }
 }
@@ -70,10 +70,11 @@ YDL_STREAM_OPTS = {
     "source_address": "0.0.0.0",
     "extractor_args": {
         "youtube": {
-            "po_token": ["web+http://127.0.0.1:4416/"]
+            "player_client": ["web"]
         }
     }
 }
+
 FFMPEG_OPTS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
