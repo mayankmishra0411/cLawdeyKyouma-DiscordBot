@@ -46,14 +46,26 @@ class Track:
 # yt-dlp configuration
 # ---------------------------------------------------------------------------
 
-_YT_EXTRACTOR_ARGS = {
-    "youtube": {
-        "player_client": ["web"],
-        # This is the syntax confirmed working end-to-end on the Oracle box:
-        # fetch a PO token for the "web" client from the local bgutil server.
-        "po_token": ["web+http://127.0.0.1:4416"],
-    },
-}
+import os
+
+# Check if running on the Oracle cloud server
+IS_PROD = os.getenv("BOT_ENV") == "production"
+
+if IS_PROD:
+    # Production (Oracle Cloud): Needs PO Token server on port 4416
+    _YT_EXTRACTOR_ARGS = {
+        "youtube": {
+            "player_client": ["web"],
+            "po_token": ["web+http://127.0.0.1:4416"],
+        },
+    }
+else:
+    # Local PC (Residential IP): Spoof Mobile Web / Android to bypass bot check cleanly
+    _YT_EXTRACTOR_ARGS = {
+        "youtube": {
+            "player_client": ["mweb", "android", "web"]
+        },
+    }
 
 YDL_SEARCH_OPTS = {
     "format": "bestaudio/best",
