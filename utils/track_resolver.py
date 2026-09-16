@@ -56,7 +56,8 @@ YDL_SEARCH_OPTS = {
     "skip_download": True,
     "extractor_args": {
         "youtube": {
-            "player_client": ["web"]
+            "player_client": ["web"],
+            "po_token": ["web+http://127.0.0.1:4416"]
         }
     }
 }
@@ -70,7 +71,8 @@ YDL_STREAM_OPTS = {
     "source_address": "0.0.0.0",
     "extractor_args": {
         "youtube": {
-            "player_client": ["web"]
+            "player_client": ["web"],
+            "po_token": ["web+http://127.0.0.1:4416"]
         }
     }
 }
