@@ -54,7 +54,6 @@ YDL_SEARCH_OPTS = {
     "default_search": "auto",
     "extract_flat": "in_playlist",
     "skip_download": True,
-    "cookiefile": "cookies.txt",
 }
 
 YDL_STREAM_OPTS = {
@@ -64,7 +63,6 @@ YDL_STREAM_OPTS = {
     "no_warnings": True,
     "skip_download": True,
     "source_address": "0.0.0.0",
-    "cookiefile": "cookies.txt",
 }
 
 FFMPEG_OPTS = {
