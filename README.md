@@ -32,6 +32,9 @@ So for Spotify/Apple Music input, the bot:
 - `/autoplay on|off` — when the queue runs low, automatically adds songs similar to what's playing,
   queued and recently finished (saved per server, off by default). Recommended tracks are marked ✨.
 - `/recommend [count]` — shows suggestions with the reason for each; pick one to queue it.
+- Feedback buttons on recommendations: **👍** / **🗑️ Remove** under each "Autoplay queued" message, and
+  **👍** / **👎 Skip** when a recommendation is playing. Anyone in the server can use them. Disliked or removed
+  songs steer the next picks away from that sound and aren't recommended again for 30 days.
 
 ## Setup
 

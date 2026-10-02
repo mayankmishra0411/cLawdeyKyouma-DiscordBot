@@ -135,7 +135,9 @@ Use one connection and run writes via `run_in_executor`, or use `aiosqlite`. The
 - `GuildPlayer` gets: `history: deque[Track](maxlen=10)`, `history_outcomes: deque[str](maxlen=10)`,
   `session_id: str`, `last_activity: float`, `current_play_id: int | None`, `skip_requested: bool`,
   `stop_requested: bool`.
-- **Session**: new `session_id` (uuid4) when the bot connects to voice, or when more than 30 min pass with nothing playing.
+- **Session**: new `session_id` (uuid4) when the bot connects to voice, on `/stopandclear` or `/leave`, or when
+  more than 30 min pass with nothing playing. A new session clears `history` / `history_outcomes`, so songs from
+  before a stop never seed recommendations for what's queued after it.
 - **On real track start** (`start_offset == 0` in `_start`): insert the `plays` row with `listeners` /
   `listener_ids` from `voice_client.channel.members` (exclude bots).
 - **On track end** (`_after` / next `play_next`): compute `listened_sec` from the existing
@@ -273,7 +275,13 @@ repeatedly finishes start appearing as recommendations in matching sessions.
 ---
 
 ## 7. Phase 4 — Polish (optional)
-- 👍 / 👎 buttons on the now-playing message (👍 = +1.5, 👎 = −1.5 and skip).
+- ✅ **Done (built early):** feedback buttons on recommended tracks, stored in a `feedback` table
+  (`guild_id, session_id, track_key, video_id, user_id, value, action, created_at`).
+  - "✨ Autoplay queued" message: **👍** (+1.5) and **🗑️ Remove** (−1.5, takes it out of the queue).
+  - "Now playing" message of a recommendation: **👍** (+1.5) and **👎 Skip** (−1.5, skips; logged as a skip).
+  - Live effect: the session's last 5 feedback items become seeds (👍 +0.8, 👎/Remove −0.6) and are excluded
+    from picks. A track whose net feedback in the guild is negative isn't recommended for 30 days.
+  - Phase 3 should add feedback values to `server_affinity` (they're explicit, so no support rule needed).
 - `/autoplay explore:<0-1>` to set the explore rate per guild.
 - `/why`: shows the reason and top contributing seeds/sources for the current recommendation.
 

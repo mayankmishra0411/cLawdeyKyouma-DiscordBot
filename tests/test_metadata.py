@@ -76,6 +76,7 @@ CASES = [
     ("Money Trees", "Kendrick Lamar", "Kendrick Lamar", "Money Trees", 0.5),
     ("m.A.A.d city", "Kendrick Lamar", "Kendrick Lamar", "m.A.A.d city", 0.5),
     ("Cold Water (feat. Justin Bieber & MØ)", "Major Lazer Official", "Major Lazer", "Cold Water", 0.5),
+    ("505", "Official Arctic Monkeys", "Arctic Monkeys", "505", 0.5),
     ("Believer", "7clouds Lyrics", "", "Believer", 0.2),
     ("Believer", "Best Music Mix", "", "Believer", 0.2),
     # Fallback: no dash, unknown channel

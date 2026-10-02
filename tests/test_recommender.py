@@ -286,3 +286,34 @@ def test_last_two_artists_blocked():
     # Walkin: 21 Savage & Kendrick blocked. redrum: only YAH. & Walkin are the last two now.
     # FEEL.: Kendrick is allowed again once two other artists sit in between.
     assert [p.title for p in picks] == ["Walkin", "redrum", "FEEL."]
+
+
+def test_feedback_seeds():
+    liked, disliked = track("SZA", "Snooze"), track("Drake", "Teenage Fever")
+    w = {s.label: s.weight for s in build_seeds(track("A", "Now"), [], [], [],
+                                                feedback=[(liked, 1.5), (disliked, -1.5)])}
+    assert w == {"Now": 1.0, "Snooze": rec.LIKE_SEED_WEIGHT, "Teenage Fever": rec.DISLIKE_SEED_WEIGHT}
+
+
+def test_store_disliked_is_net_negative():
+    s = Store(":memory:")
+    s.add_feedback(1, "s", "drake|teenage fever", "v1", 10, -1.5, "remove")
+    s.add_feedback(1, "s", "sza|snooze", "v2", 10, 1.5, "like")
+    s.add_feedback(1, "s", "joji|tarmac", "v3", 10, -1.5, "dislike")
+    s.add_feedback(1, "s", "joji|tarmac", "v3", 11, 1.5, "like")      # someone else liked it: cancels out
+    assert s.get_disliked(1, 0) == ({"drake|teenage fever"}, {"v1"})
+    assert s.get_disliked(2, 0) == (set(), set())
+
+
+def test_disliked_tracks_never_recommended(monkeypatch):
+    async def fake_mix(video_id, limit=25):
+        return [{"video_id": "vBad", "raw_title": "Drake - Teenage Fever", "channel": "Drake", "duration": 200},
+                {"video_id": "vOk", "raw_title": "SZA - Snooze", "channel": "SZA", "duration": 200}]
+
+    monkeypatch.setattr(rec, "fetch_youtube_mix", fake_mix)
+    store = Store(":memory:")
+    store.add_feedback(1, "old", "drake|teenage fever", "vBad", 10, -1.5, "remove")
+    r = Recommender(store, rec.LastFM(api_key=""))
+    cur = Track(title="Steve Lacy - Infrunami", channel="Steve Lacy", video_id="v0").apply_metadata()
+    picks = asyncio.run(r.recommend(1, cur, [], [], [], count=2, explore=0.0))
+    assert [p.video_id for p in picks] == ["vOk"]
