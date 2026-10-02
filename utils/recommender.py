@@ -38,8 +38,12 @@ TAG_TOP_N = 12               # only the top pre-ranked candidates get tag lookup
 LASTFM_MIN_CONFIDENCE = 0.5
 EXPLORE_RANKS = (5, 15)      # explore picks come from rank 6..15
 DISLIKE_BLOCK_DAYS = 30      # a track with net 👎/removed feedback isn't recommended again for this long
-LIKE_SEED_WEIGHT = 0.8
+LIKE_SEED_WEIGHT = 0.6       # a 👍'd track that isn't already in play context
+LIKE_BOOST = 1.3             # a 👍'd track that is already a seed gets its weight ×1.3 instead
 DISLIKE_SEED_WEIGHT = -0.6
+MAX_FEEDBACK_SEEDS = 3
+SAME_ARTIST_DISCOUNT = float(os.getenv("REC_SAME_ARTIST_DISCOUNT", "0.5"))  # seed's own artist via that seed
+ARTIST_SATURATION = float(os.getenv("REC_ARTIST_SATURATION", "0.5"))        # per earlier session play by artist
 ARTIST_GAP = int(os.getenv("REC_ARTIST_GAP", "2"))   # a pick's artist can't match any of the N songs before it
 
 NON_MUSIC_RE = re.compile(
@@ -87,16 +91,15 @@ def build_seeds(current: Optional[Track], queue: Sequence[Track],
                 feedback: Sequence[tuple[Track, float]] = ()) -> list[Seed]:
     """Spec §5.1 seed weights. `history`/`outcomes`/`feedback` are oldest-first.
 
-    feedback: this session's (track, value) from the 👍 / 👎 / Remove buttons. The last 5
-    become seeds; they're explicit, so they outweigh what skips and completions imply.
+    feedback: this session's (track, value) from the 👍 / 👎 / Remove buttons. Each track counts
+    once (its net feedback). A 👍 on a track that's already a seed boosts that seed instead of
+    adding a duplicate; otherwise the newest MAX_FEEDBACK_SEEDS tracks become extra seeds.
     """
     seeds: list[Seed] = []
     if current:
         seeds.append(Seed(current, 1.0))
     for t, w in zip(list(queue)[:3], (0.8, 0.6, 0.4)):
         seeds.append(Seed(t, w))
-    for t, value in list(feedback)[::-1][:5]:
-        seeds.append(Seed(t, LIKE_SEED_WEIGHT if value > 0 else DISLIKE_SEED_WEIGHT))
     recent = list(zip(history, outcomes))[::-1][:5]
     for k, (t, outcome) in enumerate(recent, start=1):
         decay = 0.7 ** k
@@ -109,6 +112,24 @@ def build_seeds(current: Optional[Track], queue: Sequence[Track],
         elif outcome == "skipped_late" and t.is_recommendation:
             seeds.append(Seed(t, 0.2 * decay))
         # skipped_neutral / stopped / error: no signal, not a seed
+
+    net: dict[str, tuple[Track, float]] = {}
+    for t, value in feedback:                      # oldest -> newest; re-inserting keeps newest last
+        key = t.canonical_key or t.video_id
+        prev = net.pop(key, (t, 0.0))[1]
+        net[key] = (t, prev + value)
+    extra = 0
+    for key, (t, value) in reversed(net.items()):
+        if value == 0:
+            continue
+        existing = [s for s in seeds if (s.track.canonical_key or s.track.video_id) == key]
+        if value > 0 and existing:
+            for s in existing:
+                s.weight *= LIKE_BOOST if s.weight > 0 else 1.0
+        elif extra < MAX_FEEDBACK_SEEDS:
+            seeds = [s for s in seeds if s not in existing]   # a 👎 overrides "completed"
+            seeds.append(Seed(t, LIKE_SEED_WEIGHT if value > 0 else DISLIKE_SEED_WEIGHT))
+            extra += 1
     return seeds
 
 
@@ -147,10 +168,27 @@ def score_candidates(results: list[tuple[Seed, str, list[dict]]],
             if c.video_id:
                 by_video[c.video_id] = key
             contrib = seed.weight * w_src * e["score"]
+            # A seed's Mix is often mostly its own artist; those picks shouldn't dominate.
+            seed_artist = primary_artist(seed.track.canonical_artist)
+            if seed_artist and seed_artist == primary_artist(e["artist"]) and contrib > 0:
+                contrib *= SAME_ARTIST_DISCOUNT
             c.score += contrib
             c.contributions[seed.label] = c.contributions.get(seed.label, 0.0) + contrib
             c.sources.add(source)
     return cands
+
+
+def apply_artist_saturation(cands, context_artists: Sequence[str]):
+    """Damp artists that already played (or are queued) this session: ×1/(1 + s·n)."""
+    counts: dict[str, int] = {}
+    for a in context_artists:
+        a = primary_artist(a)
+        if a:
+            counts[a] = counts.get(a, 0) + 1
+    for c in cands:
+        n = counts.get(_artist_id(c), 0)
+        if n and c.score > 0:
+            c.score /= 1 + ARTIST_SATURATION * n
 
 
 def tag_profile(weighted_tags: list[tuple[float, dict]]) -> dict[str, float]:
@@ -277,7 +315,7 @@ class Recommender:
         if not vid:
             return []
         cached = await self.store.run("cache_get", "ytmix", vid, YTMIX_TTL)
-        if cached is not None:
+        if cached:
             # Re-parse so parser improvements apply to already-cached Mixes.
             for e in cached:
                 artist, title, _ = parse_artist_title(e["raw_title"], e["channel"])
@@ -289,7 +327,8 @@ class Recommender:
             print(f"YouTube Mix failed for {vid}: {e}")
             return []
         entries = [entry_from_mix(e, i, len(raw)) for i, e in enumerate(raw)]
-        await self.store.run("cache_put", "ytmix", vid, entries)
+        if entries:   # an empty Mix is usually a transient failure: retry next time, don't cache it
+            await self.store.run("cache_put", "ytmix", vid, entries)
         return entries
 
     async def _lastfm(self, seed: Seed) -> list[dict]:
@@ -370,6 +409,7 @@ class Recommender:
         results = [(s, src, r) for (s, src, _), r in zip(jobs, lists) if isinstance(r, list)]
 
         cands = score_candidates(results, {"ytmix": W_YTMIX, "lastfm": W_LASTFM})
+        apply_artist_saturation(cands.values(), [t.canonical_artist for t in [*history, current, *queue] if t])
         ranked = sorted(cands.values(), key=lambda c: -c.score)
 
         await self._apply_tag_bonus(ranked[:TAG_TOP_N], positives)

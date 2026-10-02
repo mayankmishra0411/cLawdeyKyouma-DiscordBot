@@ -88,7 +88,7 @@ Fill in `DISCORD_TOKEN`, and optionally `SPOTIFY_CLIENT_ID` /
   YouTube Mix only.
 - Recommendation tuning (defaults shown): `AUTOPLAY_BATCH=2`, `REC_RECENT_HOURS=3`,
   `REC_W_YTMIX=1.0`, `REC_W_LASTFM=1.0`, `REC_TAG_ALPHA=0.5`, `REC_EXPLORE=0.2`,
-  `REC_ARTIST_GAP=2`.
+  `REC_ARTIST_GAP=2`, `REC_SAME_ARTIST_DISCOUNT=0.5`, `REC_ARTIST_SATURATION=0.5`.
   See `docs/recommendation_engine_spec.md` for how they're used.
 
 ### 5. Run it

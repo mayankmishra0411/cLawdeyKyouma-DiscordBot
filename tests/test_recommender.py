@@ -317,3 +317,52 @@ def test_disliked_tracks_never_recommended(monkeypatch):
     cur = Track(title="Steve Lacy - Infrunami", channel="Steve Lacy", video_id="v0").apply_metadata()
     picks = asyncio.run(r.recommend(1, cur, [], [], [], count=2, explore=0.0))
     assert [p.video_id for p in picks] == ["vOk"]
+
+
+def test_feedback_counts_once_per_track_and_boosts_existing_seed():
+    creep, garage = track("Radiohead", "Creep"), track("Weezer", "In The Garage")
+    history = [creep]
+    seeds = build_seeds(track("Pixies", "Where Is My Mind"), [], history, ["completed"],
+                        feedback=[(creep, 1.5), (creep, 1.5), (garage, -1.5)])
+    w = {s.label: round(s.weight, 4) for s in seeds}
+    # Creep: one seed (history 0.7) boosted ×1.3, not three separate seeds
+    assert w == {"Where Is My Mind": 1.0, "Creep": round(0.7 * rec.LIKE_BOOST, 4),
+                 "In The Garage": rec.DISLIKE_SEED_WEIGHT}
+    assert sum(1 for s in seeds if s.label == "Creep") == 1
+
+
+def test_dislike_overrides_completed_seed():
+    t = track("Weezer", "Say It Ain't So")
+    w = {s.label: s.weight for s in build_seeds(None, [], [t], ["completed"], feedback=[(t, -1.5)])}
+    assert w == {"Say It Ain't So": rec.DISLIKE_SEED_WEIGHT}
+
+
+def test_same_artist_discount_from_own_seed():
+    weezer = Seed(track("Weezer", "Say It Ain't So"), 1.0)
+    cands = score_candidates([(weezer, "ytmix", [entry("Weezer", "Buddy Holly", 1.0),
+                                                 entry("Pixies", "Debaser", 0.7)])], W)
+    assert cands["pixies|debaser"].score > cands["weezer|buddy holly"].score
+    assert cands["weezer|buddy holly"].score == pytest.approx(rec.SAME_ARTIST_DISCOUNT)
+
+
+def test_artist_saturation():
+    pool = _cands(("Radiohead", "Let Down", 2.0, 200), ("Weezer", "In The Garage", 1.8, 200),
+                  ("Pixies", "Debaser", 1.0, 200))
+    rec.apply_artist_saturation(pool, ["Radiohead", "Radiohead", "Weezer", "Foo Fighters"])
+    by = {c.title: round(c.score, 3) for c in pool}
+    assert by == {"Let Down": 1.0, "In The Garage": 1.2, "Debaser": 1.0}
+
+
+def test_empty_mix_is_not_cached(monkeypatch):
+    calls = []
+
+    async def fake_mix(video_id, limit=25):
+        calls.append(video_id)
+        return []
+
+    monkeypatch.setattr(rec, "fetch_youtube_mix", fake_mix)
+    r = Recommender(Store(":memory:"), rec.LastFM(api_key=""))
+    cur = Track(title="Where Is My Mind", channel="Pixies", video_id="vP").apply_metadata()
+    asyncio.run(r.recommend(1, cur, [], [], [], count=2, explore=0.0))
+    asyncio.run(r.recommend(1, cur, [], [], [], count=2, explore=0.0))
+    assert calls == ["vP", "vP"]   # retried, not served from an empty cache

@@ -200,6 +200,14 @@ score(c) = Σ_seeds  w_seed · Σ_sources  W_source · sim_source(seed, c)
 Defaults: `W_ytmix = 1.0`, `W_lastfm = 1.0`, `W_cooc = 0.3` (Phase 3), `α = 0.5`, `β = 0.25`.
 Server history is deliberately weighted low: it may nudge/confirm the ranking but never dominate it.
 Candidates that show up for **several seeds** naturally rise to the top. That's the queue-aware behaviour.
+
+Artist-dominance controls (a seed's YouTube Mix can be 80% its own artist):
+- **Same-artist discount:** a candidate by the seed's own artist gets that seed's contribution ×`REC_SAME_ARTIST_DISCOUNT` (0.5).
+- **Session saturation:** after scoring, candidate score ÷ (1 + `REC_ARTIST_SATURATION` (0.5) × n), where n = how many
+  songs by that artist are in history / current / queue.
+- **Feedback seeds count once per track** (net value). A 👍 on a track already in context boosts that seed ×1.3
+  instead of adding a duplicate; otherwise up to 3 extra seeds (👍 +0.6, 👎/Remove −0.6). A 👎 replaces a "completed" seed.
+- Empty YouTube Mix results are never cached (they're usually transient failures).
 Fetch tags (`track.getTopTags`, cached) only for the top ~15 to bound API calls.
 
 ### 5.4 Filters & diversity (applied after scoring)
@@ -306,6 +314,8 @@ REC_HISTORY_BETA=0.25
 REC_W_COOC=0.3
 REC_EXPLORE=0.2
 REC_ARTIST_GAP=2
+REC_SAME_ARTIST_DISCOUNT=0.5
+REC_ARTIST_SATURATION=0.5
 ```
 Update `README.md` with the new commands and env vars when each phase lands.
 
