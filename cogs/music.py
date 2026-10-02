@@ -21,6 +21,7 @@ REC_DB_PATH = os.getenv("REC_DB_PATH", "data/bot.db")
 SESSION_IDLE_SEC = 30 * 60
 AUTOPLAY_BATCH = int(os.getenv("AUTOPLAY_BATCH", "2"))
 PENDING_RECS_TTL = 10 * 60
+FEEDBACK_VALUES = {"like": 1.5, "dislike": -1.5, "remove": -1.5}
 
 
 def label(track: Track) -> str:
@@ -66,11 +67,17 @@ class GuildPlayer:
         self.autoplay_suppressed: bool = False   # set by /stopandclear and /leave
         self.pending_recs: list[Track] = []
         self.pending_at: float = 0.0
+        self.session_feedback: list[tuple[Track, float]] = []   # from 👍 / 👎 / Remove buttons
         self.refilling: bool = False
 
     def new_session(self):
+        """Start a fresh listening session: earlier tracks stop influencing recommendations."""
         self.session_id = str(uuid.uuid4())
         self.last_activity = time.time()
+        self.history.clear()
+        self.history_outcomes.clear()
+        self.session_feedback = []
+        self.pending_recs = []
 
     def elapsed(self) -> float:
         if not self.start_time:
@@ -161,7 +168,34 @@ class MusicCog(commands.Cog):
     async def _compute_recs(self, guild_id: int, player: GuildPlayer, count: int) -> list[Track]:
         return await self.recommender.recommend(
             guild_id, player.current, list(player.queue),
-            list(player.history), list(player.history_outcomes), count=count)
+            list(player.history), list(player.history_outcomes), count=count,
+            feedback=list(player.session_feedback))
+
+    # ------------------------------------------------------------------
+    # Feedback on recommendations (👍 / 👎 / Remove buttons)
+    # ------------------------------------------------------------------
+
+    async def record_feedback(self, guild_id: int, track: Track, user_id: int, action: str):
+        value = FEEDBACK_VALUES[action]
+        player = self.get_player(guild_id)
+        player.session_feedback.append((track, value))
+        player.pending_recs = []   # precomputed picks didn't know about this
+        await self._safe_store("add_feedback", guild_id, player.session_id, track.canonical_key,
+                               track.video_id, user_id, value, action)
+
+    def remove_upcoming(self, guild_id: int, track: Track) -> str:
+        """Take a recommended track out of play. Returns 'queue', 'skipped' or 'gone'."""
+        player = self.get_player(guild_id)
+        for t in list(player.queue):
+            if t is track:
+                player.queue.remove(t)
+                self._maybe_autoplay(guild_id)
+                return "queue"
+        if player.current is track and player.voice_client and player.voice_client.is_playing():
+            player.skip_requested = True   # log it as a skip, never as "completed"
+            player.voice_client.stop()     # after= -> play_next
+            return "skipped"
+        return "gone"
 
     @staticmethod
     def _is_known(player: GuildPlayer, track: Track) -> bool:
@@ -209,7 +243,8 @@ class MusicCog(commands.Cog):
             if player.text_channel:
                 for t in recs:
                     reason = f" — {t.rec_reason}" if t.rec_reason else ""
-                    await player.text_channel.send(f"✨ Autoplay queued **{t.display_name}**{reason}")
+                    await player.text_channel.send(f"✨ Autoplay queued **{t.display_name}**{reason}",
+                                                   view=RecFeedbackView(self, guild_id, t, playing=False))
             if player.current is None and not vc.is_playing():
                 self.play_next(guild_id)
         except Exception as e:
@@ -275,8 +310,10 @@ class MusicCog(commands.Cog):
             
             # Announce only for new tracks, not seeks
             if start_offset == 0 and player.text_channel:
+                view = RecFeedbackView(self, guild_id, track, playing=True) if track.is_recommendation else None
                 await player.text_channel.send(
-                    f"🎶 Now playing **{label(track)}** — *{track.source}*"
+                    f"🎶 Now playing **{label(track)}** — *{track.source}*",
+                    **({"view": view} if view else {}),
                 )
             if start_offset == 0 and player.autoplay and not player.autoplay_suppressed:
                 asyncio.ensure_future(self._prefetch_recs(guild_id))
@@ -488,6 +525,7 @@ class MusicCog(commands.Cog):
         player.autoplay_suppressed = True
         player.pending_recs = []
         self._finish_current_play(player)
+        player.new_session()
         player.current = None
         if player.voice_client:
             player.voice_client.stop()
@@ -598,10 +636,56 @@ class MusicCog(commands.Cog):
             player.autoplay_suppressed = True
             player.pending_recs = []
             self._finish_current_play(player)
+            player.new_session()
             player.current = None
             await player.voice_client.disconnect()
             player.current = None
         await interaction.response.send_message("👋 Disconnected.")
+
+
+class RecFeedbackView(discord.ui.View):
+    """Buttons under autoplay / now-playing messages for recommended tracks.
+
+    Queued:  👍  |  🗑️ Remove (takes it out of the queue)
+    Playing: 👍  |  👎 Skip
+    Any member can press them; each press is logged as feedback for that track.
+    """
+    def __init__(self, cog: "MusicCog", guild_id: int, track: Track, playing: bool):
+        super().__init__(timeout=3 * 3600)
+        self.cog, self.guild_id, self.track = cog, guild_id, track
+        self.message_note = ""
+        like = discord.ui.Button(emoji="👍", style=discord.ButtonStyle.secondary)
+        like.callback = self.on_like
+        self.add_item(like)
+        bad = discord.ui.Button(emoji="👎", label="Skip", style=discord.ButtonStyle.secondary) if playing else \
+            discord.ui.Button(emoji="🗑️", label="Remove", style=discord.ButtonStyle.secondary)
+        bad.callback = self.on_dislike if playing else self.on_remove
+        self.add_item(bad)
+
+    async def _finish(self, interaction: discord.Interaction, note: str):
+        for item in self.children:
+            item.disabled = True
+        content = f"{interaction.message.content}\n-# {note}"
+        await interaction.response.edit_message(content=content, view=self)
+        self.stop()
+
+    async def on_like(self, interaction: discord.Interaction):
+        await self.cog.record_feedback(self.guild_id, self.track, interaction.user.id, "like")
+        await self._finish(interaction, f"👍 {interaction.user.display_name} liked this — more like it coming")
+
+    async def on_dislike(self, interaction: discord.Interaction):
+        await self.cog.record_feedback(self.guild_id, self.track, interaction.user.id, "dislike")
+        where = self.cog.remove_upcoming(self.guild_id, self.track)
+        did = "skipped it" if where == "skipped" else "noted"
+        await self._finish(interaction, f"👎 {interaction.user.display_name} disliked this — {did}, "
+                                        f"won't recommend it again for a while")
+
+    async def on_remove(self, interaction: discord.Interaction):
+        await self.cog.record_feedback(self.guild_id, self.track, interaction.user.id, "remove")
+        where = self.cog.remove_upcoming(self.guild_id, self.track)
+        did = {"queue": "removed from the queue", "skipped": "skipped it"}.get(where, "it already played")
+        await self._finish(interaction, f"🗑️ {interaction.user.display_name}: {did} — "
+                                        f"won't recommend it again for a while")
 
 
 class SearchResultsView(discord.ui.View):

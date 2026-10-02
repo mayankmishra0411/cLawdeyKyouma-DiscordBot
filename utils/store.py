@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS sim_cache (
 CREATE TABLE IF NOT EXISTS guild_settings (
   guild_id INT PRIMARY KEY, autoplay INT DEFAULT 0, explore REAL DEFAULT 0.2
 );
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY,
+  guild_id INT, session_id TEXT, track_key TEXT, video_id TEXT,
+  user_id INT,
+  value REAL,                     -- +1.5 like, -1.5 dislike / remove
+  action TEXT,                    -- like | dislike | remove
+  created_at INT
+);
+CREATE INDEX IF NOT EXISTS feedback_guild_time ON feedback(guild_id, created_at);
 """
 
 
@@ -140,6 +149,24 @@ class Store:
     def cache_put(self, source: str, seed: str, payload: list):
         self._exec("INSERT OR REPLACE INTO sim_cache (source, seed, payload, fetched_at) VALUES (?, ?, ?, ?)",
                    (source, seed, json.dumps(payload), int(time.time())))
+
+    # ---- feedback -----------------------------------------------------
+
+    def add_feedback(self, guild_id: int, session_id: str, track_key: str, video_id: str,
+                     user_id: int, value: float, action: str) -> int:
+        cur = self._exec(
+            """INSERT INTO feedback (guild_id, session_id, track_key, video_id, user_id, value, action, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (guild_id, session_id, track_key, video_id or "", user_id, value, action, int(time.time())))
+        return cur.lastrowid
+
+    def get_disliked(self, guild_id: int, since: int) -> tuple[set[str], set[str]]:
+        """(track keys, video ids) whose net feedback in this guild since `since` is negative."""
+        rows = self._query(
+            """SELECT track_key, video_id, SUM(value) AS net FROM feedback
+               WHERE guild_id = ? AND created_at >= ? GROUP BY track_key, video_id HAVING net < 0""",
+            (guild_id, since))
+        return {r["track_key"] for r in rows}, {r["video_id"] for r in rows if r["video_id"]}
 
     # ---- guild settings -----------------------------------------------
 

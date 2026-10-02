@@ -116,7 +116,7 @@ class FakeRecommender:
     def __init__(self):
         self.n = 0
 
-    async def recommend(self, guild_id, current, queue, history, outcomes, count=2, explore=None):
+    async def recommend(self, guild_id, current, queue, history, outcomes, count=2, explore=None, feedback=()):
         out = []
         for _ in range(count):
             self.n += 1
@@ -136,7 +136,7 @@ def test_autoplay_keeps_going_and_stops_on_stop(harness):
         vc = player.voice_client
         vc.is_connected = lambda: True
 
-        async def send(msg):
+        async def send(msg, **kw):
             sent.append(msg)
         player.text_channel = SimpleNamespace(send=send)
 
@@ -166,3 +166,108 @@ def test_autoplay_keeps_going_and_stops_on_stop(harness):
     assert player.current is None and not player.queue
     assert any(m.startswith("✨ Autoplay queued **Rec1 - Auto1** — because you played Song0") for m in sent)
     assert any("🎶 Now playing **✨ Rec1 - Auto1**" in m for m in sent)
+
+
+def test_stopandclear_starts_fresh_session(harness):
+    """After /stopandclear, songs from before the stop must not seed recommendations."""
+    async def scenario():
+        cog, player = harness(asyncio.get_running_loop())
+        rec = FakeRecommender()
+        seen = []
+        orig = rec.recommend
+
+        async def spy(guild_id, current, queue, history, outcomes, count=2, explore=None, feedback=()):
+            seen.append(([t.canonical_key for t in history], current.canonical_key if current else None))
+            return await orig(guild_id, current, queue, history, outcomes, count, explore)
+        rec.recommend = spy
+        cog.recommender = rec
+        player.autoplay = True
+        vc = player.voice_client
+        vc.is_connected = lambda: True
+        interaction = SimpleNamespace(guild_id=5, response=SimpleNamespace(send_message=_noop))
+
+        player.queue.extend(tracks(3))
+        cog.play_next(5)
+        await settle()
+        vc.end_naturally()          # Song0 completed -> in history
+        await settle()
+        old_session = player.session_id
+
+        await music.MusicCog.stop.callback(cog, interaction)
+        await settle()
+        assert not player.history and player.session_id != old_session
+
+        # Queue a new song: autoplay must only see the new song.
+        seen.clear()
+        new = Track(title="Radiohead - 15 Step", channel="Radiohead", video_id="rh", requested_by=1).apply_metadata()
+        player.autoplay_suppressed = False
+        player.queue.append(new)
+        cog.play_next(5)
+        await settle()
+        return cog, seen, old_session
+
+    cog, seen, old_session = asyncio.run(scenario())
+    assert seen and all(h == [] for h, _ in seen)
+    assert seen[0][1] == "radiohead|15 step"
+    rows = cog.store.get_plays(5)
+    assert rows[-1]["track_key"] == "radiohead|15 step" and rows[-1]["session_id"] != old_session
+    assert [r["outcome"] for r in rows if r["session_id"] == old_session][-1] == "stopped"
+
+
+async def _noop(*a, **k):
+    pass
+
+
+class FakeButtonInteraction:
+    def __init__(self, content):
+        self.user = SimpleNamespace(id=42, display_name="Matank")
+        self.message = SimpleNamespace(content=content)
+        self.edited = None
+
+        async def edit_message(content=None, view=None):
+            self.edited = content
+        self.response = SimpleNamespace(edit_message=edit_message)
+
+
+def test_remove_and_dislike_buttons(harness):
+    async def scenario():
+        cog, player = harness(asyncio.get_running_loop())
+        cog.recommender = FakeRecommender()
+        vc = player.voice_client
+        vc.is_connected = lambda: True
+        player.text_channel = SimpleNamespace(send=_noop)
+        player.queue.extend(tracks(1))
+        rec1, rec2 = await cog.recommender.recommend(5, None, [], [], [])
+        player.queue.extend([rec1, rec2])
+        cog.play_next(5)
+        await settle()
+
+        # 🗑️ Remove on a queued autoplay pick
+        view = music.RecFeedbackView(cog, 5, rec2, playing=False)
+        i = FakeButtonInteraction("✨ Autoplay queued **Rec2 - Auto2**")
+        await view.on_remove(i)
+        assert rec2 not in player.queue and rec1 in player.queue
+        assert "removed from the queue" in i.edited and all(b.disabled for b in view.children)
+
+        # 👎 Skip on the now-playing message of a recommendation
+        vc.end_naturally()          # Song0 done -> rec1 playing
+        await settle()
+        assert player.current is rec1
+        view = music.RecFeedbackView(cog, 5, rec1, playing=True)
+        i = FakeButtonInteraction("🎶 Now playing **✨ Rec1 - Auto1**")
+        await view.on_dislike(i)
+        await settle()
+        assert player.current is not rec1 and "skipped it" in i.edited
+
+        # 👍 on something else
+        await music.RecFeedbackView(cog, 5, rec2, playing=False).on_like(FakeButtonInteraction("x"))
+        return cog, player
+
+    cog, player = asyncio.run(scenario())
+    assert [(t.canonical_title, v) for t, v in player.session_feedback] == [
+        ("Auto2", -1.5), ("Auto1", -1.5), ("Auto2", 1.5)]
+    rows = cog.store._query("SELECT action, user_id FROM feedback ORDER BY id")
+    assert [(r["action"], r["user_id"]) for r in rows] == [("remove", 42), ("dislike", 42), ("like", 42)]
+    # A 👎 Skip is logged as a skip, never as "completed"
+    outcomes = {r["track_key"]: r["outcome"] for r in cog.store.get_plays(5)}
+    assert outcomes["rec1|auto1"] == "skipped_early"

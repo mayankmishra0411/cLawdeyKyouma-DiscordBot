@@ -52,7 +52,7 @@ _EMOJI_RE = re.compile(
 _DASH_RE = re.compile(r"\s+[–—]\s+")
 _TOPIC_RE = re.compile(r"^(.*?)\s*-\s*topic$", re.IGNORECASE)
 _VEVO_RE = re.compile(r"^(.*?)\s*vevo$", re.IGNORECASE)
-_OFFICIAL_SUFFIX_RE = re.compile(r"\s*\b(?:official|officiel)\s*$", re.IGNORECASE)
+_OFFICIAL_RE = re.compile(r"^\s*(?:official|officiel)\b\s*|\s*\b(?:official|officiel)\s*$", re.IGNORECASE)
 # Channel names containing these words are lyric/compilation/fan channels, not the artist.
 _NON_ARTIST_CHANNEL_WORDS = {
     "lyrics", "lyric", "fan", "fans", "music", "records", "recordings", "beats", "radio",
@@ -62,8 +62,8 @@ _NON_ARTIST_CHANNEL_WORDS = {
 
 
 def _artist_from_channel(channel: str) -> str:
-    """An official artist channel ("Kendrick Lamar", "Major Lazer Official") -> the artist name."""
-    name = _OFFICIAL_SUFFIX_RE.sub("", channel).strip()
+    """An official artist channel ("Kendrick Lamar", "Major Lazer Official", "Official Arctic Monkeys")."""
+    name = _OFFICIAL_RE.sub("", channel).strip()
     words = set(normalize_channel(name).split())
     if not words or words & _NON_ARTIST_CHANNEL_WORDS:
         return ""

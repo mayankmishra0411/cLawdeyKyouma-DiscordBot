@@ -37,6 +37,9 @@ MAX_FETCH_SEEDS = 4          # seeds we fetch candidates for: bounds a cold batc
 TAG_TOP_N = 12               # only the top pre-ranked candidates get tag lookups
 LASTFM_MIN_CONFIDENCE = 0.5
 EXPLORE_RANKS = (5, 15)      # explore picks come from rank 6..15
+DISLIKE_BLOCK_DAYS = 30      # a track with net 👎/removed feedback isn't recommended again for this long
+LIKE_SEED_WEIGHT = 0.8
+DISLIKE_SEED_WEIGHT = -0.6
 ARTIST_GAP = int(os.getenv("REC_ARTIST_GAP", "2"))   # a pick's artist can't match any of the N songs before it
 
 NON_MUSIC_RE = re.compile(
@@ -80,13 +83,20 @@ class Candidate:
 # ---------------------------------------------------------------------------
 
 def build_seeds(current: Optional[Track], queue: Sequence[Track],
-                history: Sequence[Track], outcomes: Sequence[str]) -> list[Seed]:
-    """Spec §5.1 seed weights. `history`/`outcomes` are oldest-first (deque order)."""
+                history: Sequence[Track], outcomes: Sequence[str],
+                feedback: Sequence[tuple[Track, float]] = ()) -> list[Seed]:
+    """Spec §5.1 seed weights. `history`/`outcomes`/`feedback` are oldest-first.
+
+    feedback: this session's (track, value) from the 👍 / 👎 / Remove buttons. The last 5
+    become seeds; they're explicit, so they outweigh what skips and completions imply.
+    """
     seeds: list[Seed] = []
     if current:
         seeds.append(Seed(current, 1.0))
     for t, w in zip(list(queue)[:3], (0.8, 0.6, 0.4)):
         seeds.append(Seed(t, w))
+    for t, value in list(feedback)[::-1][:5]:
+        seeds.append(Seed(t, LIKE_SEED_WEIGHT if value > 0 else DISLIKE_SEED_WEIGHT))
     recent = list(zip(history, outcomes))[::-1][:5]
     for k, (t, outcome) in enumerate(recent, start=1):
         decay = 0.7 ** k
@@ -338,15 +348,16 @@ class Recommender:
 
     async def recommend(self, guild_id: int, current: Optional[Track], queue: Sequence[Track],
                         history: Sequence[Track], outcomes: Sequence[str], count: int = 2,
-                        explore: Optional[float] = None) -> list[Track]:
-        seeds = build_seeds(current, queue, history, outcomes)
+                        explore: Optional[float] = None,
+                        feedback: Sequence[tuple[Track, float]] = ()) -> list[Track]:
+        seeds = build_seeds(current, queue, history, outcomes, feedback)
         if not seeds:
             return []
         for s in seeds:
             if not s.track.canonical_key:
                 s.track.apply_metadata()
 
-        # Bound network cost: strongest positive seeds + the most recent early skip.
+        # Bound network cost: strongest positive seeds + the most recent negative signal.
         positives = sorted((s for s in seeds if s.weight > 0), key=lambda s: -s.weight)
         negatives = [s for s in seeds if s.weight < 0]
         fetch = positives[:MAX_FETCH_SEEDS - (1 if negatives else 0)] + negatives[:1]
@@ -365,7 +376,7 @@ class Recommender:
         ranked.sort(key=lambda c: -c.score)
 
         exclude_keys, exclude_videos = set(), set()
-        for t in [current, *queue, *history]:
+        for t in [current, *queue, *history, *(t for t, _ in feedback)]:
             if t:
                 exclude_keys.add(t.canonical_key)
                 if t.video_id:
@@ -373,6 +384,10 @@ class Recommender:
         since = int(time.time() - RECENT_HOURS * 3600)
         for p in await self.store.run("get_plays", guild_id, since):
             exclude_keys.add(p["track_key"])
+        disliked_keys, disliked_videos = await self.store.run(
+            "get_disliked", guild_id, int(time.time() - DISLIKE_BLOCK_DAYS * 86400))
+        exclude_keys |= disliked_keys
+        exclude_videos |= disliked_videos
         exclude_keys.discard("")
         exclude_keys.discard("|")
 
