@@ -23,6 +23,8 @@ import yt_dlp
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 
+from utils.metadata import parse_artist_title, normalize_key
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -36,6 +38,25 @@ class Track:
     webpage_url: str = ""        # human-viewable page (for /nowplaying links etc.)
     stream_query: str = ""       # what we actually feed yt-dlp to get audio
     thumbnail: Optional[str] = None
+    video_id: str = ""            # YouTube ID when known
+    channel: str = ""             # uploader/channel name from yt-dlp
+    canonical_artist: str = ""
+    canonical_title: str = ""
+    canonical_key: str = ""       # "artist|title", lowercased, normalized
+    meta_confidence: float = 0.0  # 0..1, how sure we are of artist/title
+    requested_by: Optional[int] = None   # Discord user id; None for autoplay
+    is_recommendation: bool = False
+    rec_reason: str = ""          # e.g. "because you played X & Y"
+
+    def apply_metadata(self):
+        """Fill canonical_* fields. Tracks that already have an artist (Spotify) are trusted fully."""
+        if self.artist:
+            artist, title, conf = self.artist, self.title, 1.0
+        else:
+            artist, title, conf = parse_artist_title(self.title, self.channel)
+        self.canonical_artist, self.canonical_title, self.meta_confidence = artist, title, conf
+        self.canonical_key = normalize_key(artist, title)
+        return self
 
     @property
     def display_name(self) -> str:
@@ -123,7 +144,9 @@ async def search_youtube(query: str, limit: int = 3) -> list[Track]:
             webpage_url=e.get("url") or f"https://www.youtube.com/watch?v={e.get('id')}",
             stream_query=e.get("url") or f"https://www.youtube.com/watch?v={e.get('id')}",
             thumbnail=e.get("thumbnail"),
-        ))
+            video_id=e.get("id") or "",
+            channel=e.get("channel") or e.get("uploader") or "",
+        ).apply_metadata())
     return tracks
 
 
@@ -144,7 +167,9 @@ async def resolve_youtube_playlist(url: str) -> list[Track]:
             webpage_url=vid_url,
             stream_query=vid_url,
             thumbnail=e.get("thumbnail"),
-        ))
+            video_id=e.get("id") or "",
+            channel=e.get("channel") or e.get("uploader") or "",
+        ).apply_metadata())
     return tracks
 
 
@@ -220,7 +245,7 @@ class SpotifyResolver:
         yt.title = title
         yt.artist = artist
         yt.source = "Spotify -> YouTube"
-        return yt
+        return yt.apply_metadata()
 
     async def resolve_track(self, url: str) -> Optional[Track]:
         client = self._user_client or self._public
@@ -342,3 +367,26 @@ async def get_stream_url(stream_query: str) -> str:
                 return info["url"]
             return info["entries"][0]["url"]
         raise e
+
+
+async def fetch_youtube_mix(video_id: str, limit: int = 25) -> list[dict]:
+    """Flat entries of YouTube's auto-generated Mix ("radio") for a video, seed excluded.
+
+    Mix playlists are effectively endless (yt-dlp will page through thousands of
+    entries), so `playlistend` bounds it to the first page we actually use.
+    """
+    opts = dict(YDL_SEARCH_OPTS)
+    opts["noplaylist"] = False
+    opts["playlistend"] = limit + 1
+    info = await _run_extract(f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}", opts)
+    out = []
+    for e in info.get("entries", []) or []:
+        if not e or not e.get("id") or e.get("id") == video_id:
+            continue
+        out.append({
+            "video_id": e["id"],
+            "raw_title": e.get("title") or "",
+            "channel": e.get("channel") or e.get("uploader") or "",
+            "duration": e.get("duration") or 0,
+        })
+    return out[:limit]
