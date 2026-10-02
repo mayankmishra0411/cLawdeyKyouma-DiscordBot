@@ -29,6 +29,9 @@ So for Spotify/Apple Music input, the bot:
 - `/jump <seconds>` — Skip forward or rewind backward by a specific number of seconds (use negative numbers to rewind).
 - `/playlistclear` — Instantly wipes all upcoming tracks from the queue without interrupting the currently playing song.
 - `/queue`, `/skip`, `/pause`, `/resume`, `/stop`, `/leave`.
+- `/autoplay on|off` — when the queue runs low, automatically adds songs similar to what's playing,
+  queued and recently finished (saved per server, off by default). Recommended tracks are marked ✨.
+- `/recommend [count]` — shows suggestions with the reason for each; pick one to queue it.
 
 ## Setup
 
@@ -74,6 +77,16 @@ Fill in `DISCORD_TOKEN`, and optionally `SPOTIFY_CLIENT_ID` /
 - Set `SPOTIFY_ENABLE_PRIVATE=true` for private-playlist support.
 - Set `SEARCH_RESULTS_PER_SOURCE=3` to control YouTube results.
 - Set `SOUNDCLOUD_RESULTS_COUNT=5` to control fallback results.
+- Set `REC_DB_PATH=data/bot.db` to change where play history is stored (SQLite;
+  every played track is logged with its outcome — completed / skipped / stopped —
+  to feed the recommendation engine).
+- Optional: set `LASTFM_API_KEY` (free at https://www.last.fm/api/account/create) for better
+  recommendations on Western music plus genre-tag matching. Without it, recommendations use
+  YouTube Mix only.
+- Recommendation tuning (defaults shown): `AUTOPLAY_BATCH=2`, `REC_RECENT_HOURS=3`,
+  `REC_W_YTMIX=1.0`, `REC_W_LASTFM=1.0`, `REC_TAG_ALPHA=0.5`, `REC_EXPLORE=0.2`,
+  `REC_ARTIST_GAP=2`.
+  See `docs/recommendation_engine_spec.md` for how they're used.
 
 ### 5. Run it
 
@@ -84,6 +97,13 @@ python bot.py
 If `SPOTIFY_ENABLE_PRIVATE=true`, a browser tab will open on first run asking
 you to log into Spotify and approve access — you only need to do this once,
 the token gets cached to `.spotify_cache`.
+
+### Tests
+
+```bash
+pip install pytest
+python -m pytest tests
+```
 
 ## Notes & limits
 
